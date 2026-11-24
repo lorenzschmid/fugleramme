@@ -76,7 +76,7 @@ _BATTERY_INSET = 0.01  # of the short side, off the margin, so it never sits on 
 def battery(page: Image.Image, margin: Edges) -> Image.Image:
     """A dithered `page` with a low battery drawn in the top right corner inside
     `margin`, in palette indices so no dither speckles it: a black outline on white,
-    with one red bar at the empty end."""
+    with one red bar of charge left."""
     short = min(page.size)
     height = max(8, round(short * _BATTERY_HEIGHT))
     width, nub = 2 * height, max(2, height // 6)

@@ -189,10 +189,10 @@ def make_handler(
     # to the detector that drew it, since another station's birds are not ours.
     last_page: bytes | None = None
     last_from = ""
-    # The frame last packed for /frame.e6, the poll and low battery flag it was
-    # packed with, and the packed bytes.
-    packed: tuple[Frame, int, bool, bytes] | None = None
-    # The same for /frame.png, which carries no poll.
+    # The frame last packed for /frame.e6, whether it carries the low battery mark,
+    # and the packed bytes.
+    packed: tuple[Frame, bool, bytes] | None = None
+    # The same for /frame.png, which never carries the mark.
     pictured: tuple[Frame, bytes] | None = None
     # The kiosk polls every few seconds, so one warning per failed request would
     # never stop. Say it once, and again on recovery.
@@ -487,12 +487,15 @@ def make_handler(
             self._send_cached(modes.png_bytes(self._context(settings)), "image/png")
 
         def _client_headers(self) -> dict[str, str]:
-            """The Rotation setting and the frame's local time, on every answer to an
-            external panel's client. A refusal and a 304 carry them too: the client draws
-            its own message then, and may have kept its ETag through a deep sleep but not
-            which way it hangs. The time spares a battery client NTP and a timezone."""
+            """What a client acts on between fetches, on every answer to an external
+            panel's client. A refusal and a 304 carry them too: the client draws its own
+            message then, and may have kept its ETag through a deep sleep but not which
+            way it hangs. The time spares a battery client NTP and a timezone."""
+            settings = store.get()
             return {
-                "Fugleramme-Rotation": str(store.get().rotation),
+                "Fugleramme-Rotation": str(settings.rotation),
+                "Fugleramme-Refresh": str(settings.refresh_minutes),
+                "Fugleramme-Battery": "low" if status.low_battery else "ok",
                 "Fugleramme-Time": datetime.now().astimezone().isoformat(timespec="seconds"),
             }
 
@@ -516,17 +519,16 @@ def make_handler(
                 refusal = b'/frame.e6 is only for the 7.3" and 13.3" panels'
                 self._send(404, refusal, "text/plain", self._client_headers())
                 return
-            low = status.low_battery  # once, so the mark and the flag agree
-            settings = store.get()
-            poll = settings.refresh_minutes
-            if packed is None or packed[0] is not frame or packed[1:3] != (poll, low):
+            low = status.low_battery
+            if packed is None or packed[0] is not frame or packed[1] != low:
                 page, rotation = frame
                 if low:
                     # Today's margins, not the render's: after a margin change the mark
                     # may sit off the window until the next render, which is rare and small.
-                    page = battery(page, Edges(*(m / 100 for m in settings.margins(True))))
-                packed = (frame, poll, low, e6.encode(page, rotation, poll, low))
-            self._send_cached(packed[3], "application/octet-stream", self._client_headers())
+                    margins = store.get().margins(True)
+                    page = battery(page, Edges(*(m / 100 for m in margins)))
+                packed = (frame, low, e6.encode(page, rotation))
+            self._send_cached(packed[2], "application/octet-stream", self._client_headers())
 
         def _frame_png(self):
             # For a panel driven through inky: in the panel's native orientation, so it
@@ -729,10 +731,9 @@ def make_handler(
                         self._send(400, b"no such battery value", "text/plain")
                         return
                     with toggling:
-                        status.low_battery = (
-                            not status.low_battery if value is None else value == "low"
-                        )
-                    log.info("Battery: %s", "low" if status.low_battery else "ok")
+                        low = not status.low_battery if value is None else value == "low"
+                        status.low_battery = low
+                    log.info("Battery: %s", "low" if low else "ok")
                     self._send(204, b"", "text/plain")
                     return
                 if button not in buttons.LABELS:

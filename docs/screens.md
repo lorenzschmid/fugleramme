@@ -208,12 +208,17 @@ already dithered and rotated as necessary.
 Choose your panel size under **External panel size**. **Rotation**, **Margin** and
 **Panel refresh** all apply to it. Until you choose one, it gets the same as the Inky connected to this frame, or a 13.3" page if there is none.
 
-Every response from `/frame.e6` and `/frame.png`, errors included, has these headers:
+Every response from `/frame.e6` and `/frame.png`, errors and `304`s included, has these headers:
 
 | Header | Example | For |
 | --- | --- | --- |
 | `Fugleramme-Rotation` | `90` | The **Rotation**, to draw stuff the right way up |
+| `Fugleramme-Refresh` | `15` | The **Panel refresh** in minutes, how long to sleep between fetches; `0` means as soon as the page changes |
+| `Fugleramme-Battery` | `low` | `low` or `ok`, as last set with the `battery` [button](#buttons) |
 | `Fugleramme-Time` | `2026-11-21T22:15:03+01:00` | The frame's local time, e.g. for quiet window |
+
+The pages carry the picture; the headers carry what to do until the next fetch.
+A client ignores any header it does not know.
 
 ### Buttons
 
@@ -227,7 +232,7 @@ curl -X POST http://<host>.local:8080/press -d button=A -d password=<admin passw
 - `value` - only with `battery`: `low` or `ok`
 - `password` - only needed if the admin page requires sign-in
 
-`battery` turns a small low battery mark in the top right corner of `/frame.e6` on or off. With `value`, it sets the mark instead, so sending it twice does no harm. The frame forgets it when it restarts, so compare the [file's low battery flag](#e6-file-format) with your own battery reading on each fetch, and press `battery` again when they disagree.
+`battery` turns a small low battery mark in the top right corner of `/frame.e6` on or off. With `value`, it sets the mark instead, so sending it twice does no harm. The frame forgets it when it restarts, so compare the `Fugleramme-Battery` header with your own battery reading on each fetch, and press `battery` again when they disagree. `/frame.png` never carries the mark; its client can draw its own from the header.
 
 Responses: `204` on success, `400` for an unknown button or value, `401` for a wrong or missing password, `429` after too many attempts, and `404` if **External e-ink panel** is not enabled.
 
@@ -276,21 +281,33 @@ with all relevant configuration details is sent ahead of the payload. If the
 header's configuration does not match the microcontroller's, the payload is
 discarded.
 
-The header is 24 bytes long, little-endian, and is followed directly by the
-pixel data.
+The file holds only what it takes to check and draw the pixels, so a stored
+copy can be drawn again later as it is. Everything that is about the moment of
+the fetch, like how long to sleep or the battery, is a
+[response header](#on-an-external-e-ink-panel) instead.
+
+The header is little-endian, and the pixel data follows it.
 
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | `E6F1` |
 | 4 | 2 | Version, `2` |
-| 6 | 1 | Encoding, `1` (the colour codes below) |
-| 7 | 1 | Poll minutes, from **Panel refresh** |
-| 8 | 1 | Flags: bit 0 is a low battery, set with the `battery` [button](#buttons) |
-| 9 | 3 | Reserved, `0` |
-| 12 | 2 | Width, `1200` on the 13.3", `800` on the 7.3" |
-| 14 | 2 | Height, `1600` on the 13.3", `480` on the 7.3" |
+| 6 | 2 | Header length, `24` |
+| 8 | 2 | Width, `1200` on the 13.3", `800` on the 7.3" |
+| 10 | 2 | Height, `1600` on the 13.3", `480` on the 7.3" |
+| 12 | 1 | Encoding, `1` (the colour codes below) |
+| 13 | 3 | Reserved |
 | 16 | 4 | Length of the pixels, `960000` on the 13.3", `192000` on the 7.3" |
 | 20 | 4 | CRC-32 of the pixels |
+
+So that a client keeps working as the format grows:
+
+- Read the pixels from the header length, not from byte 24. A new field is
+  added to the end of the header, which then grows, and an old client skips it.
+- Ignore what you do not know: the reserved bytes, and any bytes between 24 and
+  the header length.
+- Refuse a version other than `2`. The version only changes when an old client
+  would draw the new file wrong.
 
 The pixels are already oriented the way the panel's controllers read them, so
 a client only needs to stream them. Two pixels to a byte, the left one in the
@@ -302,7 +319,9 @@ row in turn, top to bottom. With a different Inky connected, the file
 carries that panel's page, which its width and height reveal, so check them.
 
 The response carries an `ETag`; send it back as `If-None-Match` and an
-unchanged page responds with `304` and nothing to download. `404` means the
+unchanged page responds with `304` and nothing to download. A new **Panel
+refresh** alone leaves the page unchanged, so read `Fugleramme-Refresh` from the
+`304` too. `404` means the
 setting is off or the panel size is neither 7.3" nor 13.3", and `503` that the
 frame has not drawn a page yet.
 

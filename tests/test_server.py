@@ -253,19 +253,18 @@ def test_the_e6_page_is_the_loop_s_frame_packed(ext_eink_panel):
     assert body[:4] == b"E6F1" and len(body) == 24 + 960_000
 
 
-def test_a_changed_panel_refresh_reaches_the_e6_header(ext_eink_panel):
-    """Panel refresh rides in the packed header, so a change to it alone has to
-    repack: the panel sleeps by it and would otherwise never hear the new one."""
+def test_a_changed_panel_refresh_reaches_a_client_holding_the_page(ext_eink_panel):
+    """Panel refresh rides in a header, so a client holding an unchanged page hears
+    the new one on its 304 without downloading the page again."""
     ext_eink_panel.status.frame = (_dithered(1), 0)
     etag = _fetch(ext_eink_panel.base + "/frame.e6")[1]["ETag"]
 
     ext_eink_panel.store.update(refresh_minutes=30)
-    status, headers, body = _fetch(
+    status, headers, _body = _fetch(
         ext_eink_panel.base + "/frame.e6", headers={"If-None-Match": etag}
     )
 
-    assert status == 200 and headers["ETag"] != etag
-    assert body[7] == 30
+    assert status == 304 and headers["Fugleramme-Refresh"] == "30"
 
 
 def test_an_unchanged_e6_page_revalidates_to_304_and_a_new_one_does_not(ext_eink_panel):
@@ -317,7 +316,7 @@ def test_the_png_page_follows_the_e6_page_s_switch_and_first_render(ext_eink_pan
 def test_an_unchanged_png_page_revalidates_to_304(ext_eink_panel):
     ext_eink_panel.status.frame = (_dithered(1), 0)
     etag = _fetch(ext_eink_panel.base + "/frame.png")[1]["ETag"]
-    ext_eink_panel.store.update(refresh_minutes=30)  # in e6's header, not in a PNG
+    ext_eink_panel.store.update(refresh_minutes=30)  # a header, not the page
     assert _fetch(ext_eink_panel.base + "/frame.png", headers={"If-None-Match": etag})[0] == 304
 
 
@@ -338,7 +337,7 @@ def test_the_picked_panel_size_lays_out_the_page_and_its_e6(ext_eink_panel):
     assert _size(_fetch(ext_eink_panel.base + "/frame.png")[2]) == (800, 480)
     status, _headers, body = _fetch(ext_eink_panel.base + "/frame.e6")
     assert status == 200
-    assert struct.unpack_from("<HHI", body, 12) == (800, 480, 192_000)
+    assert struct.unpack_from("<HH", body, 8) == (800, 480)
 
 
 def test_the_e6_page_is_not_there_for_a_panel_it_cannot_pack(ext_eink_panel):
@@ -351,15 +350,17 @@ def test_the_e6_page_is_not_there_for_a_panel_it_cannot_pack(ext_eink_panel):
 
 
 @pytest.mark.parametrize("route", ["/frame.e6", "/frame.png"])
-def test_every_answer_to_an_external_panel_carries_the_rotation_and_time(ext_eink_panel, route):
+def test_every_answer_to_an_external_panel_carries_the_client_headers(ext_eink_panel, route):
     url = ext_eink_panel.base + route
-    ext_eink_panel.store.update(rotation=90)
+    ext_eink_panel.store.update(rotation=90, refresh_minutes=15)
 
     def answer(headers: dict | None = None) -> tuple[int, str]:
         status, sent, _body = _fetch(url, headers=headers)
         sent_at = datetime.fromisoformat(sent["Fugleramme-Time"])
         assert sent_at.utcoffset() == datetime.now().astimezone().utcoffset()
         assert abs((datetime.now().astimezone() - sent_at).total_seconds()) < 5
+        assert sent["Fugleramme-Refresh"] == "15"
+        assert sent["Fugleramme-Battery"] == "ok"
         return status, sent["Fugleramme-Rotation"]
 
     assert answer() == (503, "90")
@@ -377,8 +378,8 @@ def test_every_answer_to_an_external_panel_carries_the_rotation_and_time(ext_ein
 def test_the_client_headers_are_only_on_the_external_panel_s_pages(ext_eink_panel, route):
     ext_eink_panel.status.frame = (_dithered(1), 0)
     status, headers, _body = _fetch(ext_eink_panel.base + route)
-    assert status == 200 and "Fugleramme-Rotation" not in headers
-    assert "Fugleramme-Time" not in headers
+    assert status == 200
+    assert not any(name.startswith("Fugleramme-") for name in headers)
 
 
 def test_the_preview_follows_this_frame_s_inky_whatever_the_external_size(tmp_path, source):
@@ -942,21 +943,21 @@ def test_a_press_names_a_button_the_panel_has(ext_eink_panel):
     assert _post(ext_eink_panel.base + "/press", {"button": "E"})[0] == 400
 
 
-def test_the_battery_press_marks_the_e6_page_and_flags_it(ext_eink_panel):
-    """A toggle like the buttons; the flag lets the client press again when the
+def test_the_battery_press_marks_the_e6_page_and_says_so(ext_eink_panel):
+    """A toggle like the buttons; the header lets the client press again when the
     frame no longer holds its state, after a restart or a lost press."""
     url = ext_eink_panel.base + "/frame.e6"
     ext_eink_panel.status.frame = (_dithered(1), 0)
     status, headers, plain = _fetch(url)
-    assert status == 200 and plain[8] == 0
-    unflagged = headers["ETag"]
+    assert status == 200 and headers["Fugleramme-Battery"] == "ok"
+    unmarked = headers["ETag"]
 
     assert _post(ext_eink_panel.base + "/press", {"button": "battery"})[0] == 204
     assert ext_eink_panel.status.low_battery is True
-    marked = _fetch(url)[2]
-    assert marked[8] == 1 and marked[24:] != plain[24:]
-    # A new ETag, so a client holding the unflagged page downloads the flagged one.
-    assert _fetch(url, headers={"If-None-Match": unflagged})[0] == 200
+    _status, headers, marked = _fetch(url)
+    assert headers["Fugleramme-Battery"] == "low" and marked[24:] != plain[24:]
+    # A new ETag, so a client holding the unmarked page downloads the marked one.
+    assert _fetch(url, headers={"If-None-Match": unmarked})[0] == 200
 
     assert _post(ext_eink_panel.base + "/press", {"button": "battery"})[0] == 204
     assert _fetch(url)[2] == plain

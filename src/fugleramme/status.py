@@ -68,8 +68,8 @@ class Status:
     reboot_error: str | None = None
     # The Wi-Fi setup's, published by its own thread; None where there is none (#308).
     wifi: WifiState | None = None
-    # Set by an external panel's battery press, drawn and flagged on /frame.e6. In
-    # memory only: the flag tells the client to press again after a restart.
+    # Set by an external panel's battery press, drawn on /frame.e6. In memory only:
+    # the Fugleramme-Battery header tells the client to press again after a restart.
     low_battery: bool = False
     # The admin writes it; read it through `testing`.
     mat_test: MatTest | None = None
