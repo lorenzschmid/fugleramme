@@ -1,11 +1,12 @@
 """The panel page packed for an external e-ink panel, so a microcontroller
 can stream it to the glass without touching it.
 
-A 20-byte little-endian header, then the payload:
+A 24-byte little-endian header, then the payload:
 
     0  magic "E6F1" (u32)   4  version (u16)       6  encoding (u8)
-    7  poll minutes (u8)    8  width (u16)         10 height (u16)
-    12 payload length (u32) 16 payload CRC-32 (u32)
+    7  poll minutes (u8)    8  flags (u8)          9  reserved, zero (3 bytes)
+    12 width (u16)          14 height (u16)        16 payload length (u32)
+    20 payload CRC-32 (u32)
 
 Encoding 1 is the controllers' own colour codes, two pixels a byte with the left
 one in the high nibble, in the order the glass's controllers read them. The
@@ -16,6 +17,9 @@ which reads its landscape rows top to bottom.
 
 The poll is the frame's Panel refresh in minutes, 0 meaning as soon as it
 changes: the client sleeps that long between fetches, its own minimum on top.
+
+Flag bit 0 is a low battery: the client said so through /press, and the page
+carries the mark. A client whose battery reads otherwise presses again.
 """
 
 from __future__ import annotations
@@ -30,9 +34,10 @@ from .config import PANEL_SIZES
 from .panel import to_glass
 
 MAGIC = b"E6F1"
-VERSION = 1
+VERSION = 2
 ENCODING = 1
-HEADER = struct.Struct("<4sHBBHHII")
+HEADER = struct.Struct("<4sHBBB3xHHII")
+LOW_BATTERY = 0x01  # flag bit
 
 # The glasses `encode` packs for: the 13.3" Seeed panel's, as two controllers,
 # and the 7.3"'s, as one.
@@ -44,8 +49,9 @@ GLASSES = (PANEL_SIZES["7.3"], _TWO_CONTROLLERS)
 _NATIVE = np.array([0, 1, 2, 3, 5, 6], dtype=np.uint8)
 
 
-def encode(frame: Image.Image, rotation: int, poll: int) -> bytes:
-    """The dithered panel page, as it hangs, packed for the glass."""
+def encode(frame: Image.Image, rotation: int, poll: int, low_battery: bool = False) -> bytes:
+    """The dithered panel page, as it hangs, packed for the glass. `low_battery` is
+    only the flag: the mark is drawn on `frame` before it gets here."""
     glass = to_glass(frame, rotation)
     halves = glass.size == _TWO_CONTROLLERS
     # The 13.3"'s controllers read it a quarter turn clockwise from the landscape
@@ -61,6 +67,7 @@ def encode(frame: Image.Image, rotation: int, poll: int) -> bytes:
         VERSION,
         ENCODING,
         min(poll, 255),
+        LOW_BATTERY if low_battery else 0,
         width,
         height,
         len(payload),

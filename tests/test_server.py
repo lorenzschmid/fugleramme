@@ -250,7 +250,7 @@ def test_the_e6_page_is_the_loop_s_frame_packed(ext_eink_panel):
 
     assert status == 200
     assert headers["Content-Type"] == "application/octet-stream"
-    assert body[:4] == b"E6F1" and len(body) == 20 + 960_000
+    assert body[:4] == b"E6F1" and len(body) == 24 + 960_000
 
 
 def test_a_changed_panel_refresh_reaches_the_e6_header(ext_eink_panel):
@@ -338,7 +338,7 @@ def test_the_picked_panel_size_lays_out_the_page_and_its_e6(ext_eink_panel):
     assert _size(_fetch(ext_eink_panel.base + "/frame.png")[2]) == (800, 480)
     status, _headers, body = _fetch(ext_eink_panel.base + "/frame.e6")
     assert status == 200
-    assert struct.unpack_from("<HHI", body, 8) == (800, 480, 192_000)
+    assert struct.unpack_from("<HHI", body, 12) == (800, 480, 192_000)
 
 
 def test_the_e6_page_is_not_there_for_a_panel_it_cannot_pack(ext_eink_panel):
@@ -940,6 +940,53 @@ def test_a_press_from_another_machine_is_the_button_s_settings_write(ext_eink_pa
 
 def test_a_press_names_a_button_the_panel_has(ext_eink_panel):
     assert _post(ext_eink_panel.base + "/press", {"button": "E"})[0] == 400
+
+
+def test_the_battery_press_marks_the_e6_page_and_flags_it(ext_eink_panel):
+    """A toggle like the buttons; the flag lets the client press again when the
+    frame no longer holds its state, after a restart or a lost press."""
+    url = ext_eink_panel.base + "/frame.e6"
+    ext_eink_panel.status.frame = (_dithered(1), 0)
+    status, headers, plain = _fetch(url)
+    assert status == 200 and plain[8] == 0
+    unflagged = headers["ETag"]
+
+    assert _post(ext_eink_panel.base + "/press", {"button": "battery"})[0] == 204
+    assert ext_eink_panel.status.low_battery is True
+    marked = _fetch(url)[2]
+    assert marked[8] == 1 and marked[24:] != plain[24:]
+    # A new ETag, so a client holding the unflagged page downloads the flagged one.
+    assert _fetch(url, headers={"If-None-Match": unflagged})[0] == 200
+
+    assert _post(ext_eink_panel.base + "/press", {"button": "battery"})[0] == 204
+    assert _fetch(url)[2] == plain
+
+
+@pytest.mark.parametrize("value", ["low", "ok"])
+def test_a_battery_value_sets_rather_than_toggles(ext_eink_panel, value):
+    """So a client retrying a press it is unsure of cannot undo it."""
+    press = {"button": "battery", "value": value}
+    for _ in range(2):
+        assert _post(ext_eink_panel.base + "/press", press)[0] == 204
+        assert ext_eink_panel.status.low_battery is (value == "low")
+
+
+def test_a_battery_press_names_a_value_it_knows(ext_eink_panel):
+    press = {"button": "battery", "value": "empty"}
+    assert _post(ext_eink_panel.base + "/press", press)[0] == 400
+    assert ext_eink_panel.status.low_battery is False
+
+
+def test_the_battery_is_not_on_the_png_page(ext_eink_panel):
+    url = ext_eink_panel.base + "/frame.png"
+    ext_eink_panel.status.frame = (_dithered(1), 0)
+    plain = _fetch(url)[2]
+    _post(ext_eink_panel.base + "/press", {"button": "battery"})
+    assert _fetch(url)[2] == plain
+
+
+def test_a_battery_press_on_a_locked_frame_takes_the_admin_password(locked_panel):
+    assert _post(locked_panel + "/press", {"button": "battery"})[0] == 401
 
 
 def test_a_press_is_not_there_until_the_external_panel_is_switched_on(frame):

@@ -223,10 +223,13 @@ An external panel's buttons work just like the [frame's own](operations.md#butto
 curl -X POST http://<host>.local:8080/press -d button=A -d password=<admin password>
 ```
 
-- `button` - `A`, `B`, `C` or `D` (there is no 5 second hold for the Wi-Fi setup)
+- `button` - `A`, `B`, `C` or `D` (there is no 5 second hold for the Wi-Fi setup), or `battery`
+- `value` - only with `battery`: `low` or `ok`
 - `password` - only needed if the admin page requires sign-in
 
-Responses: `204` on success, `400` for an unknown button, `401` for a wrong or missing password, `429` after too many attempts, and `404` if **External e-ink panel** is not enabled.
+`battery` turns a small low battery mark in the top right corner of `/frame.e6` on or off. With `value`, it sets the mark instead, so sending it twice does no harm. The frame forgets it when it restarts, so compare the [file's low battery flag](#e6-file-format) with your own battery reading on each fetch, and press `battery` again when they disagree.
+
+Responses: `204` on success, `400` for an unknown button or value, `401` for a wrong or missing password, `429` after too many attempts, and `404` if **External e-ink panel** is not enabled.
 
 The password is sent unencrypted over plain HTTP. If the frame is reachable from the internet or an unsafe network, serve it over HTTPS [behind a reverse proxy](operations.md#behind-a-reverse-proxy).
 
@@ -273,19 +276,21 @@ with all relevant configuration details is sent ahead of the payload. If the
 header's configuration does not match the microcontroller's, the payload is
 discarded.
 
-The header is 20 bytes long, little-endian, and is followed directly by the
+The header is 24 bytes long, little-endian, and is followed directly by the
 pixel data.
 
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | `E6F1` |
-| 4 | 2 | Version, `1` |
+| 4 | 2 | Version, `2` |
 | 6 | 1 | Encoding, `1` (the colour codes below) |
 | 7 | 1 | Poll minutes, from **Panel refresh** |
-| 8 | 2 | Width, `1200` on the 13.3", `800` on the 7.3" |
-| 10 | 2 | Height, `1600` on the 13.3", `480` on the 7.3" |
-| 12 | 4 | Length of the pixels, `960000` on the 13.3", `192000` on the 7.3" |
-| 16 | 4 | CRC-32 of the pixels |
+| 8 | 1 | Flags: bit 0 is a low battery, set with the `battery` [button](#buttons) |
+| 9 | 3 | Reserved, `0` |
+| 12 | 2 | Width, `1200` on the 13.3", `800` on the 7.3" |
+| 14 | 2 | Height, `1600` on the 13.3", `480` on the 7.3" |
+| 16 | 4 | Length of the pixels, `960000` on the 13.3", `192000` on the 7.3" |
+| 20 | 4 | CRC-32 of the pixels |
 
 The pixels are already oriented the way the panel's controllers read them, so
 a client only needs to stream them. Two pixels to a byte, the left one in the

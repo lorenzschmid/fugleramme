@@ -45,7 +45,7 @@ from .. import __version__, buttons, e6, modes, updates, wifi
 from ..languages import namer
 from ..panel import Panel, resolution_of, to_glass
 from ..render.fonts import FONTS_DIR, TITLE_CUT
-from ..render.page import banded
+from ..render.page import Edges, banded, battery
 from ..render.paper import paper_tile
 from ..settings import Settings, SettingsStore, merged
 from ..source import Source, Unavailable
@@ -189,9 +189,9 @@ def make_handler(
     # to the detector that drew it, since another station's birds are not ours.
     last_page: bytes | None = None
     last_from = ""
-    # The panel page last packed for /frame.e6, the poll it carried, and the frame
-    # it was packed from.
-    packed: tuple[Frame, int, bytes] | None = None
+    # The frame last packed for /frame.e6, the poll and low battery flag it was
+    # packed with, and the packed bytes.
+    packed: tuple[Frame, int, bool, bytes] | None = None
     # The same for /frame.png, which carries no poll.
     pictured: tuple[Frame, bytes] | None = None
     # The kiosk polls every few seconds, so one warning per failed request would
@@ -200,6 +200,8 @@ def make_handler(
     # Failed sign-ins per client address, newest last, under `guessing`.
     attempts: dict[str, list[float]] = {}
     guessing = threading.Lock()
+    # Two battery toggles at once must both land.
+    toggling = threading.Lock()
 
     def note(message: str, gone: bool) -> None:
         nonlocal unreachable
@@ -514,10 +516,17 @@ def make_handler(
                 refusal = b'/frame.e6 is only for the 7.3" and 13.3" panels'
                 self._send(404, refusal, "text/plain", self._client_headers())
                 return
-            poll = store.get().refresh_minutes
-            if packed is None or packed[0] is not frame or packed[1] != poll:
-                packed = (frame, poll, e6.encode(*frame, poll))
-            self._send_cached(packed[2], "application/octet-stream", self._client_headers())
+            low = status.low_battery  # once, so the mark and the flag agree
+            settings = store.get()
+            poll = settings.refresh_minutes
+            if packed is None or packed[0] is not frame or packed[1:3] != (poll, low):
+                page, rotation = frame
+                if low:
+                    # Today's margins, not the render's: after a margin change the mark
+                    # may sit off the window until the next render, which is rare and small.
+                    page = battery(page, Edges(*(m / 100 for m in settings.margins(True))))
+                packed = (frame, poll, low, e6.encode(page, rotation, poll, low))
+            self._send_cached(packed[3], "application/octet-stream", self._client_headers())
 
         def _frame_png(self):
             # For a panel driven through inky: in the panel's native orientation, so it
@@ -712,6 +721,20 @@ def make_handler(
                     self._send(code, refused.encode(), "text/plain", _retry_after(code))
                     return
                 button = form.get("button", [""])[0]
+                if button == "battery":
+                    # Not a settings write like the others: the client's battery state.
+                    # A value sets it, so a retried press cannot undo itself.
+                    value = form.get("value", [None])[0]
+                    if value not in (None, "low", "ok"):
+                        self._send(400, b"no such battery value", "text/plain")
+                        return
+                    with toggling:
+                        status.low_battery = (
+                            not status.low_battery if value is None else value == "low"
+                        )
+                    log.info("Battery: %s", "low" if status.low_battery else "ok")
+                    self._send(204, b"", "text/plain")
+                    return
                 if button not in buttons.LABELS:
                     self._send(400, b"no such button", "text/plain")
                     return

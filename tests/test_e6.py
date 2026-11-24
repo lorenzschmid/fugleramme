@@ -36,18 +36,27 @@ def _marked(width: int, height: int, marks: dict[tuple[int, int], int]) -> Image
     return Image.frombytes("P", (width, height), pixels.tobytes())
 
 
-def test_the_header_is_20_little_endian_bytes():
+def test_the_header_is_24_little_endian_bytes():
     data = e6.encode(_page([[0, 1, 2, 3, 4, 5, 0, 1], [5, 4, 3, 2, 1, 0, 5, 4]]), 0, poll=15)
 
-    assert e6.HEADER.size == 20
+    assert e6.HEADER.size == 24
     assert data[0:4] == b"E6F1"
-    assert int.from_bytes(data[4:6], "little") == 1  # version
+    assert int.from_bytes(data[4:6], "little") == 2  # version
     assert data[6] == 1  # encoding
     assert data[7] == 15  # poll minutes
-    assert int.from_bytes(data[8:10], "little") == 8  # width
-    assert int.from_bytes(data[10:12], "little") == 2  # height
-    assert int.from_bytes(data[12:16], "little") == len(data) - 20 == 8
-    assert int.from_bytes(data[16:20], "little") == zlib.crc32(data[20:])
+    assert data[8:12] == bytes(4)  # no flags, and the reserved bytes zero
+    assert int.from_bytes(data[12:14], "little") == 8  # width
+    assert int.from_bytes(data[14:16], "little") == 2  # height
+    assert int.from_bytes(data[16:20], "little") == len(data) - 24 == 8
+    assert int.from_bytes(data[20:24], "little") == zlib.crc32(data[24:])
+
+
+def test_a_low_battery_is_flag_bit_0():
+    page = _page([[0, 1], [2, 3]])
+    plain, low = e6.encode(page, 0, poll=0), e6.encode(page, 0, poll=0, low_battery=True)
+
+    assert low[8] == 0x01 and low[9:12] == bytes(3)
+    assert low[:8] == plain[:8] and low[12:] == plain[12:]
 
 
 def test_a_poll_beyond_a_byte_clamps():
@@ -63,7 +72,7 @@ def test_the_payload_is_the_controllers_codes_two_to_a_byte():
     pixel takes the high nibble."""
     data = e6.encode(_page([[0, 1, 2, 3, 4, 5, 0, 1], [5, 4, 3, 2, 1, 0, 5, 4]]), 0, poll=0)
 
-    assert data[20:] == bytes([0x01, 0x23, 0x56, 0x01, 0x65, 0x32, 0x10, 0x65])
+    assert data[e6.HEADER.size :] == bytes([0x01, 0x23, 0x56, 0x01, 0x65, 0x32, 0x10, 0x65])
 
 
 def test_the_13_inch_page_turns_a_quarter_clockwise_onto_two_controllers():
@@ -71,7 +80,7 @@ def test_the_13_inch_page_turns_a_quarter_clockwise_onto_two_controllers():
     to top, is the glass's first row. Every row's left half goes to the first
     controller, then every row's right half to the second."""
     page = _marked(1600, 1200, {(0, 1199): 0, (0, 0): 3, (1599, 1199): 4, (1599, 0): 5})
-    payload = e6.encode(page, 0, poll=0)[20:]
+    payload = e6.encode(page, 0, poll=0)[e6.HEADER.size :]
 
     half = len(payload) // 2  # 1600 rows of 300 bytes for each controller
     assert payload[0] == 0x01  # bottom left: the first controller's first pixel
@@ -83,9 +92,9 @@ def test_the_13_inch_page_turns_a_quarter_clockwise_onto_two_controllers():
 def test_the_13_inch_page_fills_the_glass_exactly():
     data = e6.encode(Image.new("P", (1600, 1200), 1), 0, poll=0)
 
-    assert struct.unpack_from("<HHI", data, 8) == (1200, 1600, 960_000)
-    assert len(data) == 20 + 960_000
-    assert set(data[20:]) == {0x11}  # white everywhere
+    assert struct.unpack_from("<HHI", data, 12) == (1200, 1600, 960_000)
+    assert len(data) == e6.HEADER.size + 960_000
+    assert set(data[e6.HEADER.size :]) == {0x11}  # white everywhere
 
 
 def test_the_7_inch_page_is_its_glass_row_by_row():
@@ -93,8 +102,8 @@ def test_the_7_inch_page_is_its_glass_row_by_row():
     page = _marked(800, 480, {(0, 0): 0, (799, 0): 3, (0, 479): 4, (799, 479): 5})
     data = e6.encode(page, 0, poll=0)
 
-    assert struct.unpack_from("<HHI", data, 8) == (800, 480, 192_000)
-    payload = data[20:]
+    assert struct.unpack_from("<HHI", data, 12) == (800, 480, 192_000)
+    payload = data[e6.HEADER.size :]
     assert payload[0] == 0x01  # top left
     assert payload[399] == 0x13  # top right
     assert payload[479 * 400] == 0x51  # bottom left
@@ -105,8 +114,8 @@ def test_a_portrait_7_inch_page_turns_back_onto_its_landscape_glass():
     """Hung at 90°, the page's top right corner is the glass's first pixel."""
     data = e6.encode(_marked(480, 800, {(479, 0): 0}), 90, poll=0)
 
-    assert struct.unpack_from("<HH", data, 8) == (800, 480)
-    assert data[20] == 0x01
+    assert struct.unpack_from("<HH", data, 12) == (800, 480)
+    assert data[e6.HEADER.size] == 0x01
 
 
 @pytest.mark.parametrize("size", e6.GLASSES)

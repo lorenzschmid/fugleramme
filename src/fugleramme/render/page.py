@@ -15,6 +15,7 @@ from typing import NamedTuple
 from PIL import Image, ImageDraw, ImageFont
 
 from . import fonts
+from .dither import BLACK, RED, WHITE
 from .paper import PAD, PANEL_PAPER, paper_texture, process_sprite
 
 INK = (30, 30, 30)
@@ -66,6 +67,32 @@ def banded(page: Image.Image, margin: Edges, ink: int | tuple[int, int, int]) ->
     box = margin.window(page.size)
     band.paste(page.crop(box), box[:2])
     return band
+
+
+_BATTERY_HEIGHT = 0.03  # of the short side
+_BATTERY_INSET = 0.01  # of the short side, off the margin, so it never sits on the edge
+
+
+def battery(page: Image.Image, margin: Edges) -> Image.Image:
+    """A dithered `page` with a low battery drawn in the top right corner inside
+    `margin`, in palette indices so no dither speckles it: a black outline on white,
+    with one red bar at the empty end."""
+    short = min(page.size)
+    height = max(8, round(short * _BATTERY_HEIGHT))
+    width, nub = 2 * height, max(2, height // 6)
+    line = max(1, height // 8)
+    inset = round(short * _BATTERY_INSET)
+    _, top, right, _ = margin.window(page.size)
+    x1, y0 = right - inset - nub, top + inset
+    x0, y1 = x1 - width, y0 + height
+    marked = page.copy()
+    draw = ImageDraw.Draw(marked)
+    draw.rectangle((x0 - line, y0 - line, x1 + nub + line, y1 + line), fill=WHITE)
+    draw.rectangle((x0, y0, x1, y1), outline=BLACK, width=line)
+    draw.rectangle((x1, y0 + height // 3, x1 + nub, y1 - height // 3), fill=BLACK)
+    gap = 2 * line
+    draw.rectangle((x0 + gap, y0 + gap, x0 + gap + width // 5, y1 - gap), fill=RED)
+    return marked
 
 
 def label_px(width: int, height: int, size_key: str) -> int:
